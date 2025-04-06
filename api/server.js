@@ -19,12 +19,12 @@ const esClient = new Client({
 });
 
 const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
+    apiKey: process.env.OPENAI_API_EY
 });
 
 const app = express();
 app.use(express.json());
-const port = 3000;
+const port = process.env.PORT;
 app.use(bodyParser.json());
 
 //CORS//
