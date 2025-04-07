@@ -1,5 +1,5 @@
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, './env', '.env-local') });
+require('dotenv').config({ path: path.join(__dirname, '.env', '.env-local') });
 const express = require('express');
 const bodyParser = require('body-parser');
 const { Client } = require('@elastic/elasticsearch');
@@ -13,13 +13,13 @@ const chokidar = require('chokidar');
 const esClient = new Client({ 
     node: 'http://localhost:9200',
     auth: {
-        username: 'elastic',
+        username: process.env.ES_USERNAME,
         password: process.env.ES_PASSWORD
     }
 });
 
-const openaiClient = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_EY
 });
 
 const app = express();
@@ -46,7 +46,7 @@ const corsOptions = {
 
 const baseIndexName = 'myapp_index';
 
-let indexName = '';//`${baseIndexName}_${Date.now()}`;
+let indexName = baseIndexName;//`${baseIndexName}_${Date.now()}`;
 
 // Creazione dell'indice (se non esiste)
 const createIndex = async () => {
@@ -122,10 +122,21 @@ const indexDocument = async (title, content) => {
 
 let lastNDocuments = [];
 let results = [];
-const searchDocuments = async (query, limit) => {
-    try{
+const searchDocuments = async (user_query, limit) => {
+    try {
+        // Get keywords from OpenAI
+        const aiResponse = await openai.chat.completions.create({
+            model: 'gpt-3.5-turbo',
+            messages: [
+                { "role": "system", "content": "You will be provided with a user query. Your goal is to extract a few keywords from the text to perform a search.\nKeep the search query to a few keywords that capture the user's intent.\nOnly output the keywords, without any additional text." },
+                { "role": 'user', content: user_query }
+            ],
+        });
+        const query = aiResponse.choices[0].message.content;
         console.log("searchDocuments query", query);
-    let response = await esClient.search({
+
+        // Search in Elasticsearch
+        const searchResponse = await esClient.search({
         index: indexName,
         body: {
             query: {
@@ -183,22 +194,22 @@ const searchDocuments = async (query, limit) => {
         }
     });
 
-     // Aggiorna i risultati con quelli basati sul suggerimento
-     let results = response.hits.hits.map(hit => ({
+        // Process search results
+        let results = searchResponse.hits.hits.map(hit => ({
         id: hit._id,
         title: hit._source.title,
         highlight: hit.highlight.content
     }));
 
-    lastNDocuments = response.hits.hits.slice(-limit).map(hit => hit._source.content); // Ultimi 'limit' documenti
+        lastNDocuments = searchResponse.hits.hits.slice(-limit).map(hit => hit._source.content);
 
-    // Se non ci sono risultati, utilizza il suggerimento per rifare la ricerca
-    if (results.length === 0 && response.suggest && response.suggest.simple_phrase[0].options.length > 0) {
-        const suggestedText = response.suggest.simple_phrase[0].options[0].text;
+        // If no results, try with suggestions
+        if (results.length === 0 && searchResponse.suggest && searchResponse.suggest.simple_phrase[0].options.length > 0) {
+            const suggestedText = searchResponse.suggest.simple_phrase[0].options[0].text;
         console.log("Nessun risultato trovato. Riprovo con suggerimento:", suggestedText);
 
-        // Esegui una nuova ricerca con il suggerimento
-        response = await esClient.search({
+            // Search again with suggestion
+            const suggestedResponse = await esClient.search({
             index: indexName,
             body: {
                 query: {
@@ -239,18 +250,17 @@ const searchDocuments = async (query, limit) => {
         });
         
         // Aggiorna i risultati con quelli basati sul suggerimento
-        results = response.hits.hits.map(hit => ({
+            results = suggestedResponse.hits.hits.map(hit => ({
             id: hit._id,
             title: hit._source.title,
             highlight: hit.highlight.content
         }));
         
-        lastNDocuments = response.hits.hits.slice(-limit).map(hit => hit._source.content); // Ultimi 'limit' documenti
+            lastNDocuments = suggestedResponse.hits.hits.slice(-limit).map(hit => hit._source.content);
     }
 
     return results;
-}
-catch(error){
+    } catch (error) {
     console.log("searchDocuments error", error);
     return [];
 }
@@ -271,13 +281,15 @@ app.post('/search_in_doc', async (req, res) => {
                 const explanation = await generateGroupedExplanation(query, lastNDocuments);
                 res.json({ results, explanation });
             }
-            else{
-                res.json({ results: [], explanation:  "Nessuna corrispondenza trovata" });
+            else {
+                // Provide a more helpful message when no matches are found
+                const explanation = "Mi dispiace, non ho trovato corrispondenze nei documenti disponibili. Prova a riformulare la domanda in modo diverso o usa termini più generali.";
+                res.json({ results: [], explanation });
             }
 
         } else {
             // Richiesta di follow-up
-            const explanation = await generateGroupedExplanation(followUpText, lastNDocuments, true, followUpText); // Passa il follow-up text
+            const explanation = await generateGroupedExplanation(followUpText, lastNDocuments, true, followUpText);
             res.json({ results: [], explanation });
         }
     } catch (error) {
@@ -309,7 +321,7 @@ const generateGroupedExplanation = async (searchPhrase, documentContents, follow
         
         //console.log("generateGroupedExplanation prompt", prompt);
 
-        const response = await openaiClient.chat.completions.create({
+        const response = await openai.chat.completions.create({
             model: 'gpt-3.5-turbo',
             messages: [{ role: 'user', content: prompt }],
         });

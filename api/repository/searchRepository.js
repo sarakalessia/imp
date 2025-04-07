@@ -16,3 +16,4 @@ class SearchRepository {
 }
 
 module.exports = SearchRepository
+
